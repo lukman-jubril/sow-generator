@@ -1,6 +1,7 @@
-'use client';
+"use client";
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from "react";
+import { useModal } from "./UiProvider";
 import {
   Share2,
   Download,
@@ -20,13 +21,16 @@ import {
   Undo,
   Redo,
   ListOrdered,
-} from 'lucide-react';
+  Image as ImageIcon,
+} from "lucide-react";
 
 interface DocumentEditorProps {
   content: string;
   onChange: (content: string) => void;
   onSave: () => void;
-  onExport: (format: 'pdf' | 'word') => void;
+  onExport: (format: "pdf" | "word") => void;
+  lastJobId?: string | null;
+  onDownloadDocx?: () => void;
 }
 
 export default function DocumentEditor({
@@ -34,11 +38,25 @@ export default function DocumentEditor({
   onChange,
   onSave,
   onExport,
+  lastJobId,
+  onDownloadDocx,
 }: DocumentEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isInternalUpdate, setIsInternalUpdate] = useState(false);
-  
+  const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(
+    null,
+  );
+  const resizeState = useRef<{
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    direction: string;
+  }>({ startX: 0, startY: 0, startWidth: 0, startHeight: 0, direction: "" });
+  const { prompt } = useModal();
+
   // Track active formatting states
   const [activeFormats, setActiveFormats] = useState({
     bold: false,
@@ -48,7 +66,12 @@ export default function DocumentEditor({
   });
 
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
   const saveCursorPosition = () => {
     const selection = window.getSelection();
@@ -72,54 +95,164 @@ export default function DocumentEditor({
       selection?.removeAllRanges();
       selection?.addRange(range);
     } catch (e) {
-      console.warn('Could not restore cursor position:', e);
+      console.warn("Could not restore cursor position:", e);
     }
   };
 
   // Update active format states when selection changes
   const updateFormatStates = () => {
     setActiveFormats({
-      bold: document.queryCommandState('bold'),
-      italic: document.queryCommandState('italic'),
-      underline: document.queryCommandState('underline'),
-      strikeThrough: document.queryCommandState('strikeThrough'),
+      bold: document.queryCommandState("bold"),
+      italic: document.queryCommandState("italic"),
+      underline: document.queryCommandState("underline"),
+      strikeThrough: document.queryCommandState("strikeThrough"),
     });
   };
 
   const applyFormat = (command: string, value?: string) => {
     // Focus the editor first
     editorRef.current?.focus();
-    
+
     // Execute the command
     document.execCommand(command, false, value);
-    
+
     // Update format states
     updateFormatStates();
-    
+
     // Trigger content update
     if (editorRef.current) {
       onChange(editorRef.current.innerHTML);
     }
   };
 
-  const insertLink = () => {
-    const url = prompt('Enter URL:');
-    if (url) {
-      applyFormat('createLink', url);
-    }
+  const insertLink = async () => {
+    const url = await prompt("Enter URL:");
+    if (url) applyFormat("createLink", url);
   };
 
   const changeFontSize = (size: string) => {
-    applyFormat('fontSize', size);
+    applyFormat("fontSize", size);
   };
 
   const changeTextColor = (color: string) => {
-    applyFormat('foreColor', color);
+    applyFormat("foreColor", color);
   };
 
   const changeHighlight = (color: string) => {
-    applyFormat('backColor', color);
+    applyFormat("backColor", color);
   };
+
+  const insertImage = () => {
+    imageInputRef.current?.click();
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const imageDataUrl = event.target?.result as string;
+      const imgHtml = `<img src="${imageDataUrl}" style="max-width: 100%; height: auto; margin: 10px 0; cursor: move;" alt="Inserted image" class="editable-image" />`;
+      editorRef.current?.focus();
+      document.execCommand("insertHTML", false, imgHtml);
+      onChange(editorRef.current?.innerHTML || "");
+      setTimeout(() => attachImageHandlers(), 0);
+    };
+    reader.readAsDataURL(file);
+
+    e.target.value = "";
+  };
+
+  const attachImageHandlers = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    editor.querySelectorAll("img.editable-image").forEach((img) => {
+      (img as HTMLImageElement).removeEventListener("click", handleImageClick);
+      (img as HTMLImageElement).addEventListener("click", handleImageClick);
+    });
+  };
+
+  const handleImageClick = (
+    e: React.MouseEvent<HTMLImageElement> | MouseEvent,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const img = e.target as HTMLImageElement;
+    setSelectedImage(img);
+  };
+
+  const handleResizeStart = (direction: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!selectedImage) return;
+
+    const rect = selectedImage.getBoundingClientRect();
+    resizeState.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startWidth: rect.width,
+      startHeight: rect.height,
+      direction: direction,
+    };
+
+    document.addEventListener("mousemove", handleResizeMouseMove);
+    document.addEventListener("mouseup", handleResizeEnd);
+  };
+
+  const handleResizeMouseMove = (e: MouseEvent) => {
+    if (!selectedImage || !resizeState.current.direction) return;
+
+    const deltaX = e.clientX - resizeState.current.startX;
+    const deltaY = e.clientY - resizeState.current.startY;
+    const aspectRatio =
+      resizeState.current.startHeight / resizeState.current.startWidth;
+    let newWidth = resizeState.current.startWidth;
+    let newHeight = resizeState.current.startHeight;
+
+    // Determine new dimensions based on resize corner
+    if (
+      resizeState.current.direction === "se" ||
+      resizeState.current.direction === "sw"
+    ) {
+      newWidth = Math.max(50, resizeState.current.startWidth + deltaX);
+      newHeight = newWidth * aspectRatio;
+    } else if (
+      resizeState.current.direction === "ne" ||
+      resizeState.current.direction === "nw"
+    ) {
+      newWidth = Math.max(50, resizeState.current.startWidth + deltaX);
+      newHeight = newWidth * aspectRatio;
+    }
+
+    selectedImage.style.width = `${newWidth}px`;
+    selectedImage.style.height = `${newHeight}px`;
+    onChange(editorRef.current?.innerHTML || "");
+  };
+
+  const handleResizeEnd = () => {
+    document.removeEventListener("mousemove", handleResizeMouseMove);
+    document.removeEventListener("mouseup", handleResizeEnd);
+  };
+
+  // Click outside to deselect image
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        selectedImage &&
+        !selectedImage.contains(e.target as Node) &&
+        !editorRef.current?.contains(e.target as Node)
+      ) {
+        setSelectedImage(null);
+      }
+    };
+
+    document.addEventListener("click", handleClickOutside);
+    return () => {
+      document.removeEventListener("click", handleClickOutside);
+    };
+  }, [selectedImage]);
 
   const handleInput = () => {
     if (editorRef.current) {
@@ -140,67 +273,81 @@ export default function DocumentEditor({
 
   const onPaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
-    const text = e.clipboardData.getData('text/plain');
-    document.execCommand('insertText', false, text);
+    const text = e.clipboardData.getData("text/plain");
+    document.execCommand("insertText", false, text);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Handle common keyboard shortcuts
     if (e.ctrlKey || e.metaKey) {
       switch (e.key.toLowerCase()) {
-        case 'b':
+        case "b":
           e.preventDefault();
-          applyFormat('bold');
+          applyFormat("bold");
           break;
-        case 'i':
+        case "i":
           e.preventDefault();
-          applyFormat('italic');
+          applyFormat("italic");
           break;
-        case 'u':
+        case "u":
           e.preventDefault();
-          applyFormat('underline');
+          applyFormat("underline");
           break;
-        case 'z':
+        case "z":
           if (e.shiftKey) {
             e.preventDefault();
-            applyFormat('redo');
+            applyFormat("redo");
           } else {
             e.preventDefault();
-            applyFormat('undo');
+            applyFormat("undo");
           }
           break;
-        case 'y':
+        case "y":
           e.preventDefault();
-          applyFormat('redo');
+          applyFormat("redo");
           break;
       }
     }
   };
 
   useEffect(() => {
-    if (!isInternalUpdate && editorRef.current && editorRef.current.innerHTML !== content) {
+    if (
+      !isInternalUpdate &&
+      editorRef.current &&
+      editorRef.current.innerHTML !== content
+    ) {
       const cursorPosition = saveCursorPosition();
       editorRef.current.innerHTML = content;
       restoreCursorPosition(cursorPosition);
+      attachImageHandlers();
     }
   }, [content, isInternalUpdate]);
 
   // Listen for selection changes to update toolbar state
   useEffect(() => {
-    document.addEventListener('selectionchange', handleSelectionChange);
+    document.addEventListener("selectionchange", handleSelectionChange);
     return () => {
-      document.removeEventListener('selectionchange', handleSelectionChange);
+      document.removeEventListener("selectionchange", handleSelectionChange);
     };
   }, []);
 
+  // Attach handlers when component mounts
+  useEffect(() => {
+    attachImageHandlers();
+  }, []);
+
   return (
-    <div className="flex-1 flex flex-col bg-white">
+    <div className="col-span-3 flex flex-col bg-white overflow-y-auto">
       {/* Header */}
-      <div className="border-b border-gray-200 px-8 py-4">
+      <div className="border-b border-gray-200 px-8 py-4 ">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-gray-900">Statement of Work</h1>
-            <p className="text-sm text-gray-500 mt-1">Powered by Datamellon AI</p>
+            <h1 className="text-2xl font-semibold text-gray-900">
+              Statement of Work
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              Powered by Datamellon AI
+            </p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -224,10 +371,24 @@ export default function DocumentEditor({
                 <span className="text-sm font-medium">Export</span>
               </button>
               {showExportMenu && (
-                <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10">
+                <div className="absolute right-0 mt-2 w-52 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10">
+                  {lastJobId && onDownloadDocx && (
+                    <button
+                      onClick={() => {
+                        onDownloadDocx();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm font-medium text-green-700"
+                    >
+                      Download DOCX (from API)
+                    </button>
+                  )}
+                  {lastJobId && onDownloadDocx && (
+                    <div className="border-t border-gray-200 my-1" />
+                  )}
                   <button
                     onClick={() => {
-                      onExport('pdf');
+                      onExport("pdf");
                       setShowExportMenu(false);
                     }}
                     className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm text-black"
@@ -236,12 +397,12 @@ export default function DocumentEditor({
                   </button>
                   <button
                     onClick={() => {
-                      onExport('word');
+                      onExport("word");
                       setShowExportMenu(false);
                     }}
                     className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm text-black"
                   >
-                    Export as Word
+                    Export as Word (Template)
                   </button>
                 </div>
               )}
@@ -258,14 +419,14 @@ export default function DocumentEditor({
         <div className="border-b text-black border-gray-200 px-8 py-3 flex items-center gap-1 overflow-x-auto">
           {/* Undo/Redo */}
           <button
-            onClick={() => applyFormat('undo')}
+            onClick={() => applyFormat("undo")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Undo (Ctrl+Z)"
           >
             <Undo className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('redo')}
+            onClick={() => applyFormat("redo")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Redo (Ctrl+Y)"
           >
@@ -276,36 +437,36 @@ export default function DocumentEditor({
 
           {/* Text Formatting */}
           <button
-            onClick={() => applyFormat('bold')}
+            onClick={() => applyFormat("bold")}
             className={`p-2 hover:bg-gray-100 rounded transition-colors ${
-              activeFormats.bold ? 'bg-gray-200' : ''
+              activeFormats.bold ? "bg-gray-200" : ""
             }`}
             title="Bold (Ctrl+B)"
           >
             <Bold className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('italic')}
+            onClick={() => applyFormat("italic")}
             className={`p-2 hover:bg-gray-100 rounded transition-colors ${
-              activeFormats.italic ? 'bg-gray-200' : ''
+              activeFormats.italic ? "bg-gray-200" : ""
             }`}
             title="Italic (Ctrl+I)"
           >
             <Italic className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('underline')}
+            onClick={() => applyFormat("underline")}
             className={`p-2 hover:bg-gray-100 rounded transition-colors ${
-              activeFormats.underline ? 'bg-gray-200' : ''
+              activeFormats.underline ? "bg-gray-200" : ""
             }`}
             title="Underline (Ctrl+U)"
           >
             <Underline className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('strikeThrough')}
+            onClick={() => applyFormat("strikeThrough")}
             className={`p-2 hover:bg-gray-100 rounded transition-colors ${
-              activeFormats.strikeThrough ? 'bg-gray-200' : ''
+              activeFormats.strikeThrough ? "bg-gray-200" : ""
             }`}
             title="Strikethrough"
           >
@@ -323,35 +484,35 @@ export default function DocumentEditor({
               <Type className="w-4 h-4" />
               <span className="text-xs">▼</span>
             </button>
-            <div className="hidden group-hover:flex absolute top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 gap-1 z-10">
-              <button 
-                onClick={() => changeTextColor('#000000')} 
-                className="w-6 h-6 bg-black rounded border hover:scale-110 transition-transform" 
+            <div className="hidden group-hover:flex absolute top-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 gap-1 z-10">
+              <button
+                onClick={() => changeTextColor("#000000")}
+                className="w-6 h-6 bg-black rounded border hover:scale-110 transition-transform"
                 title="Black"
               />
-              <button 
-                onClick={() => changeTextColor('#EF4444')} 
-                className="w-6 h-6 bg-red-500 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeTextColor("#EF4444")}
+                className="w-6 h-6 bg-red-500 rounded border hover:scale-110 transition-transform"
                 title="Red"
               />
-              <button 
-                onClick={() => changeTextColor('#3B82F6')} 
-                className="w-6 h-6 bg-blue-500 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeTextColor("#3B82F6")}
+                className="w-6 h-6 bg-blue-500 rounded border hover:scale-110 transition-transform"
                 title="Blue"
               />
-              <button 
-                onClick={() => changeTextColor('#10B981')} 
-                className="w-6 h-6 bg-green-500 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeTextColor("#10B981")}
+                className="w-6 h-6 bg-green-500 rounded border hover:scale-110 transition-transform"
                 title="Green"
               />
-              <button 
-                onClick={() => changeTextColor('#F59E0B')} 
-                className="w-6 h-6 bg-amber-500 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeTextColor("#F59E0B")}
+                className="w-6 h-6 bg-amber-500 rounded border hover:scale-110 transition-transform"
                 title="Amber"
               />
-              <button 
-                onClick={() => changeTextColor('#8B5CF6')} 
-                className="w-6 h-6 bg-purple-500 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeTextColor("#8B5CF6")}
+                className="w-6 h-6 bg-purple-500 rounded border hover:scale-110 transition-transform"
                 title="Purple"
               />
             </div>
@@ -366,30 +527,30 @@ export default function DocumentEditor({
               <Highlighter className="w-4 h-4" />
               <span className="text-xs">▼</span>
             </button>
-            <div className="hidden group-hover:flex absolute top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 gap-1 z-10">
-              <button 
-                onClick={() => changeHighlight('#FEF3C7')} 
-                className="w-6 h-6 bg-yellow-100 rounded border hover:scale-110 transition-transform" 
+            <div className="hidden group-hover:flex absolute top-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 gap-1 z-30">
+              <button
+                onClick={() => changeHighlight("#FEF3C7")}
+                className="w-6 h-6 bg-yellow-100 rounded border hover:scale-110 transition-transform"
                 title="Yellow"
               />
-              <button 
-                onClick={() => changeHighlight('#DBEAFE')} 
-                className="w-6 h-6 bg-blue-100 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeHighlight("#DBEAFE")}
+                className="w-6 h-6 bg-blue-100 rounded border hover:scale-110 transition-transform"
                 title="Blue"
               />
-              <button 
-                onClick={() => changeHighlight('#D1FAE5')} 
-                className="w-6 h-6 bg-green-100 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeHighlight("#D1FAE5")}
+                className="w-6 h-6 bg-green-100 rounded border hover:scale-110 transition-transform"
                 title="Green"
               />
-              <button 
-                onClick={() => changeHighlight('#FCE7F3')} 
-                className="w-6 h-6 bg-pink-100 rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeHighlight("#FCE7F3")}
+                className="w-6 h-6 bg-pink-100 rounded border hover:scale-110 transition-transform"
                 title="Pink"
               />
-              <button 
-                onClick={() => changeHighlight('transparent')} 
-                className="w-6 h-6 bg-white rounded border hover:scale-110 transition-transform" 
+              <button
+                onClick={() => changeHighlight("transparent")}
+                className="w-6 h-6 bg-white rounded border hover:scale-110 transition-transform"
                 title="Remove"
               />
             </div>
@@ -399,14 +560,14 @@ export default function DocumentEditor({
 
           {/* Lists */}
           <button
-            onClick={() => applyFormat('insertUnorderedList')}
+            onClick={() => applyFormat("insertUnorderedList")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Bullet List"
           >
             <List className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('insertOrderedList')}
+            onClick={() => applyFormat("insertOrderedList")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Numbered List"
           >
@@ -417,21 +578,21 @@ export default function DocumentEditor({
 
           {/* Alignment */}
           <button
-            onClick={() => applyFormat('justifyLeft')}
+            onClick={() => applyFormat("justifyLeft")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Align Left"
           >
             <AlignLeft className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('justifyCenter')}
+            onClick={() => applyFormat("justifyCenter")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Align Center"
           >
             <AlignCenter className="w-4 h-4" />
           </button>
           <button
-            onClick={() => applyFormat('justifyRight')}
+            onClick={() => applyFormat("justifyRight")}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
             title="Align Right"
           >
@@ -447,6 +608,15 @@ export default function DocumentEditor({
             title="Insert Link"
           >
             <Link className="w-4 h-4" />
+          </button>
+
+          {/* Image */}
+          <button
+            onClick={insertImage}
+            className="p-2 hover:bg-gray-100 rounded transition-colors"
+            title="Insert Image"
+          >
+            <ImageIcon className="w-4 h-4" />
           </button>
 
           <div className="w-px h-6 bg-gray-300 mx-2" />
@@ -468,8 +638,8 @@ export default function DocumentEditor({
           {/* Heading Style */}
           <select
             onChange={(e) => {
-              applyFormat('formatBlock', e.target.value);
-              e.target.value = 'p'; // Reset to default
+              applyFormat("formatBlock", e.target.value);
+              e.target.value = "p"; // Reset to default
             }}
             className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
             title="Heading Style"
@@ -484,29 +654,70 @@ export default function DocumentEditor({
       )}
 
       {/* Main Content Area with Professional SOW Styling */}
-      <div className="flex-1 overflow-y-auto p-8 bg-gray-50">
+      <div className="flex-1 overflow-y-auto p-8 bg-gray-50 relative">
         {content ? (
-          <div
-            ref={editorRef}
-            contentEditable
-            onInput={handleInput}
-            onPaste={onPaste}
-            onKeyDown={handleKeyDown}
-            onMouseUp={updateFormatStates}
-            onKeyUp={updateFormatStates}
-            suppressContentEditableWarning
-            className="sow-document max-w-4xl mx-auto min-h-full p-12 bg-white border border-gray-200 rounded-lg shadow-sm focus:outline-none text-gray-900"
-            style={{ minHeight: '800px' }}
-          />
+          <>
+            <div
+              ref={editorRef}
+              contentEditable
+              onInput={handleInput}
+              onPaste={onPaste}
+              onKeyDown={handleKeyDown}
+              onMouseUp={updateFormatStates}
+              onKeyUp={updateFormatStates}
+              suppressContentEditableWarning
+              className="sow-document max-w-4xl mx-auto min-h-full p-12 bg-white border border-gray-200 rounded-lg shadow-sm focus:outline-none text-gray-900"
+              style={{ minHeight: "800px" }}
+            />
+            {selectedImage && (
+              <div
+                className="fixed pointer-events-none border-2 border-blue-500 bg-blue-50 bg-opacity-20"
+                style={{
+                  left: `${selectedImage.getBoundingClientRect().left}px`,
+                  top: `${selectedImage.getBoundingClientRect().top}px`,
+                  width: `${selectedImage.getBoundingClientRect().width}px`,
+                  height: `${selectedImage.getBoundingClientRect().height}px`,
+                  zIndex: 50,
+                }}
+              >
+                {/* Resize handles */}
+                <div
+                  className="absolute w-3 h-3 bg-blue-500 cursor-se-resize pointer-events-auto bottom-0 right-0 transform translate-x-1.5 translate-y-1.5 rounded-full"
+                  onMouseDown={(e) => handleResizeStart("se", e)}
+                />
+                <div
+                  className="absolute w-3 h-3 bg-blue-500 cursor-sw-resize pointer-events-auto bottom-0 left-0 transform -translate-x-1.5 translate-y-1.5 rounded-full"
+                  onMouseDown={(e) => handleResizeStart("sw", e)}
+                />
+                <div
+                  className="absolute w-3 h-3 bg-blue-500 cursor-ne-resize pointer-events-auto top-0 right-0 transform translate-x-1.5 -translate-y-1.5 rounded-full"
+                  onMouseDown={(e) => handleResizeStart("ne", e)}
+                />
+                <div
+                  className="absolute w-3 h-3 bg-blue-500 cursor-nw-resize pointer-events-auto top-0 left-0 transform -translate-x-1.5 -translate-y-1.5 rounded-full"
+                  onMouseDown={(e) => handleResizeStart("nw", e)}
+                />
+              </div>
+            )}
+          </>
         ) : (
           <EmptyState />
         )}
       </div>
 
+      {/* Hidden image input */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleImageUpload}
+        style={{ display: "none" }}
+      />
+
       {/* Add SOW-specific styles */}
       <style jsx global>{`
         .sow-document {
-          font-family: 'Arial', 'Helvetica', sans-serif;
+          font-family: "Arial", "Helvetica", sans-serif;
           font-size: 11pt;
           line-height: 1.6;
           color: #1a1a1a;
@@ -556,14 +767,24 @@ export default function DocumentEditor({
         }
 
         /* Lists */
-        .sow-document ul,
-        .sow-document ol {
-          margin-left: 24px;
+        .sow-document ul {
+          margin-left: 40px;
           margin-bottom: 12px;
+          list-style-type: disc;
+          text-align: left;
+        }
+
+        .sow-document ol {
+          margin-left: 40px;
+          margin-bottom: 12px;
+          list-style-type: decimal;
+          text-align: left;
         }
 
         .sow-document li {
           margin-bottom: 6px;
+          margin-left: 0;
+          text-align: left;
         }
 
         /* Tables - professional formatting */
@@ -639,7 +860,7 @@ export default function DocumentEditor({
           background-color: #f3f4f6;
           padding: 2px 6px;
           border-radius: 3px;
-          font-family: 'Courier New', monospace;
+          font-family: "Courier New", monospace;
           font-size: 10pt;
         }
 
@@ -687,7 +908,8 @@ function EmptyState() {
         </h2>
 
         <p className="text-gray-600 mb-8">
-          Use the assistant on the right to get started. Upload context files or describe your project requirements.
+          Use the assistant on the right to get started. Upload context files or
+          describe your project requirements.
         </p>
 
         <div className="flex items-center justify-center gap-8 text-sm">

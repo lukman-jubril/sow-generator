@@ -1,7 +1,7 @@
-'use client';
+"use client";
 
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import {
   Document,
   Packer,
@@ -22,16 +22,18 @@ import {
   PageNumber,
   LevelFormat,
   ExternalHyperlink,
-} from 'docx';
-import { saveAs } from 'file-saver';
+} from "docx";
+import { saveAs } from "file-saver";
 
 /* ===============================
    CONSTANTS / BRANDING - EXACT TEMPLATE MATCH
 ================================ */
 
 const DATAMELLON_FOOTER = {
-  line1: 'DATAMELLON LIMITED | T: +442039954988, +23416331141, +23416331142,  +2348147728469 | W: https://datamellon.com | E: connect@datamellon.com',
-  line2: 'London Office: Epworth House, 25 City Rd, Shoreditch, London EC1Y 1AA, United Kingdom | Lagos Office: NIJ House, Plot 20, Adeyemo Alakija Street, Victoria Island, Lagos, Nigeria',
+  line1:
+    "DATAMELLON LIMITED | T: +442039954988, +23416331141, +23416331142,  +2348147728469 | W: https://datamellon.com | E: connect@datamellon.com",
+  line2:
+    "London Office: Epworth House, 25 City Rd, Shoreditch, London EC1Y 1AA, United Kingdom | Lagos Office: NIJ House, Plot 20, Adeyemo Alakija Street, Victoria Island, Lagos, Nigeria",
 };
 
 // DXA units: 1440 = 1 inch
@@ -42,14 +44,86 @@ const PAGE = {
 };
 
 /* ===============================
-   PDF EXPORT - TEMPLATE FORMAT
+   PDF EXPORT - Using html2pdf for proper HTML/CSS rendering
 ================================ */
 
-export const exportToPDF = (html: string, logoBase64: string, filename = 'Datamellon_SOW.pdf') => {
+export const exportToPDF = async (
+  html: string,
+  logoBase64: string,
+  filename = "Datamellon_SOW.pdf",
+) => {
+  let mounted: HTMLElement | null = null;
+  try {
+    // Dynamically import html2pdf (client-side only)
+    const html2pdf = (await import("html2pdf.js")).default;
+
+    // Create a temporary container for the HTML
+    const element = document.createElement("div");
+    // Ensure editor/export CSS applies (DocumentEditor styles target `.sow-document`)
+    element.className = "sow-document";
+    element.innerHTML = html;
+    element.style.padding = "20px";
+    element.style.fontSize = "11pt";
+    element.style.fontFamily = "Arial, sans-serif";
+    element.style.lineHeight = "1.6";
+    element.style.color = "#111827";
+    element.style.background = "white";
+
+    // Mount in DOM so styles & layout compute correctly.
+    // Keep it visually hidden but renderable (visibility:hidden often breaks html2canvas).
+    element.style.position = "fixed";
+    element.style.left = "0";
+    element.style.top = "0";
+    element.style.width = "794px"; // ~A4 at 96dpi
+    element.style.opacity = "0";
+    element.style.pointerEvents = "none";
+    element.style.zIndex = "-1";
+    document.body.appendChild(element);
+    mounted = element;
+
+    // Configure html2pdf options
+    const opt = {
+      margin: [10, 10, 10, 10] as [number, number, number, number],
+      filename: filename,
+      image: { type: "jpeg" as const, quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+      },
+      jsPDF: {
+        orientation: "portrait" as const,
+        unit: "mm" as const,
+        format: "a4" as const,
+      },
+      pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+    };
+
+    // Generate PDF
+    await html2pdf().set(opt).from(element).save();
+  } catch (error) {
+    console.error("PDF export error:", error);
+    throw new Error(
+      `Failed to export PDF: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+  } finally {
+    if (mounted?.parentNode) mounted.parentNode.removeChild(mounted);
+  }
+};
+
+/* ===============================
+   OLD PDF EXPORT - Fallback (kept for template format if needed)
+================================ */
+
+export const exportToPDFLegacy = (
+  html: string,
+  logoBase64: string,
+  filename = "Datamellon_SOW.pdf",
+) => {
   const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'pt',
-    format: 'letter',
+    orientation: "portrait",
+    unit: "pt",
+    format: "letter",
   });
 
   const pageWidth = doc.internal.pageSize.width;
@@ -58,15 +132,24 @@ export const exportToPDF = (html: string, logoBase64: string, filename = 'Datame
   let y = margin;
 
   // === COVER PAGE ===
-  
+
   // Logo (if provided)
   if (logoBase64) {
     try {
-      const base64Data = logoBase64.includes(',') ? logoBase64.split(',')[1] : logoBase64;
-      const cleanBase64 = base64Data.replace(/\s/g, '');
-      doc.addImage(`data:image/png;base64,${cleanBase64}`, 'PNG', margin, y, 136, 22);
+      const base64Data = logoBase64.includes(",")
+        ? logoBase64.split(",")[1]
+        : logoBase64;
+      const cleanBase64 = base64Data.replace(/\s/g, "");
+      doc.addImage(
+        `data:image/png;base64,${cleanBase64}`,
+        "PNG",
+        margin,
+        y,
+        136,
+        22,
+      );
     } catch (error) {
-      console.warn('Logo error:', error);
+      console.warn("Logo error:", error);
     }
   }
 
@@ -75,15 +158,18 @@ export const exportToPDF = (html: string, logoBase64: string, filename = 'Datame
 
   // Title: "Datamellon - [Client Name]"
   doc.setFontSize(27);
-  doc.setFont('helvetica', 'normal');
-  const titleText = 'Datamellon - Client Name'; // Parse from HTML or use default
-  doc.text(titleText, pageWidth / 2, y, { align: 'center' });
+  doc.setFont("helvetica", "normal");
+  const titleText = "Datamellon - Client Name"; // Parse from HTML or use default
+  doc.text(titleText, pageWidth / 2, y, { align: "center" });
 
   // Date: "[Month Year]"
   y += 40;
   doc.setFontSize(27);
-  const dateText = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  doc.text(dateText, pageWidth / 2, y, { align: 'center' });
+  const dateText = new Date().toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+  doc.text(dateText, pageWidth / 2, y, { align: "center" });
 
   // Footer on cover page
   addPDFFooter(doc, 1);
@@ -94,57 +180,152 @@ export const exportToPDF = (html: string, logoBase64: string, filename = 'Datame
 
   // Parse HTML content
   const parser = new DOMParser();
-  const dom = parser.parseFromString(html, 'text/html');
+  const dom = parser.parseFromString(html, "text/html");
 
-  let pageNum = 2;
+  const footerSafeMargin = 140;
 
-  dom.body.childNodes.forEach((node: any) => {
-    // Check page overflow
-    if (y > pageHeight - 120) {
-      addPDFFooter(doc, pageNum);
+  // Iterate child nodes so we can treat the Table of Contents as a block
+  const nodes = Array.from(dom.body.childNodes);
+  for (let i = 0; i < nodes.length; i++) {
+    const node: any = nodes[i];
+
+    // Detect TOC start by heading text
+    const isTOCHeading =
+      node.tagName && /table of contents/i.test(node.textContent || "");
+    if (isTOCHeading) {
+      // Render TOC heading and following nodes until next H1 (assumed start of main content)
+      doc.setFontSize(18);
+      doc.setFont("helvetica", "bold");
+      doc.text(node.textContent || "", margin, y);
+      y += doc.getFontSize() * 1.4;
+
+      let j = i + 1;
+      while (j < nodes.length) {
+        const follow = nodes[j] as any;
+        // Stop when next main H1 is found
+        if (follow.tagName === "H1") break;
+
+        // render typical TOC child types (P, UL, OL)
+        if (follow.tagName === "P") {
+          doc.setFontSize(11);
+          doc.setFont("helvetica", "normal");
+          const lines = doc.splitTextToSize(
+            follow.textContent || "",
+            pageWidth - margin * 2,
+          );
+          const lineHeight = doc.getFontSize() * 1.15;
+          for (const ln of lines) {
+            if (y + lineHeight > pageHeight - footerSafeMargin) {
+              addPDFFooter(doc, doc.getNumberOfPages());
+              doc.addPage();
+              y = margin;
+            }
+            doc.text(ln, margin, y);
+            y += lineHeight;
+          }
+          y += 6;
+        } else if (follow.tagName === "UL" || follow.tagName === "OL") {
+          follow.querySelectorAll("li").forEach((li: any) => {
+            doc.setFontSize(11);
+            doc.setFont("helvetica", "normal");
+            const lines = doc.splitTextToSize(
+              `• ${li.textContent || ""}`,
+              pageWidth - margin * 2 - 12,
+            );
+            const lineHeight = doc.getFontSize() * 1.15;
+            for (const ln of lines) {
+              if (y + lineHeight > pageHeight - footerSafeMargin) {
+                addPDFFooter(doc, doc.getNumberOfPages());
+                doc.addPage();
+                y = margin;
+              }
+              doc.text(ln, margin + 8, y);
+              y += lineHeight;
+            }
+            y += 4;
+          });
+        } else if (follow.tagName === "TABLE") {
+          // fall through to table handling below by adjusting i and breaking loop to reuse table code
+          break;
+        }
+
+        // page overflow for TOC
+        if (y > pageHeight - footerSafeMargin) {
+          addPDFFooter(doc, doc.getNumberOfPages());
+          doc.addPage();
+          y = margin;
+        }
+
+        j++;
+      }
+
+      // After TOC block, ensure we start main content on a fresh page
+      addPDFFooter(doc, doc.getNumberOfPages());
       doc.addPage();
       y = margin;
-      pageNum++;
+
+      // jump iterator to the node before j (the loop will increment i)
+      i = j - 1;
+      continue;
     }
 
-    if (node.tagName === 'H1') {
+    // Check page overflow
+    if (y > pageHeight - footerSafeMargin) {
+      addPDFFooter(doc, doc.getNumberOfPages());
+      doc.addPage();
+      y = margin;
+    }
+
+    if (node.tagName === "H1") {
       doc.setFontSize(18);
-      doc.setFont('helvetica', 'bold');
-      doc.text(node.textContent || '', margin, y);
-      y += 20;
-    } else if (node.tagName === 'H2') {
+      doc.setFont("helvetica", "bold");
+      doc.text(node.textContent || "", margin, y);
+      y += doc.getFontSize() * 1.4;
+    } else if (node.tagName === "H2") {
       doc.setFontSize(14);
-      doc.setFont('helvetica', 'bold');
-      doc.text(node.textContent || '', margin, y);
-      y += 16;
-    } else if (node.tagName === 'H3') {
+      doc.setFont("helvetica", "bold");
+      doc.text(node.textContent || "", margin, y);
+      y += doc.getFontSize() * 1.3;
+    } else if (node.tagName === "H3") {
       doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.text(node.textContent || '', margin, y);
-      y += 14;
-    } else if (node.tagName === 'P') {
+      doc.setFont("helvetica", "bold");
+      doc.text(node.textContent || "", margin, y);
+      y += doc.getFontSize() * 1.25;
+    } else if (node.tagName === "P") {
       doc.setFontSize(11);
-      doc.setFont('helvetica', 'normal');
-      const lines = doc.splitTextToSize(node.textContent || '', pageWidth - margin * 2);
-      doc.text(lines, margin, y);
-      y += lines.length * 6 + 6;
-    } else if (node.tagName === 'TABLE') {
+      doc.setFont("helvetica", "normal");
+      const lines = doc.splitTextToSize(
+        node.textContent || "",
+        pageWidth - margin * 2,
+      );
+      const lineHeight = doc.getFontSize() * 1.15;
+      for (const ln of lines) {
+        if (y + lineHeight > pageHeight - footerSafeMargin) {
+          addPDFFooter(doc, doc.getNumberOfPages());
+          doc.addPage();
+          y = margin;
+        }
+        doc.text(ln, margin, y);
+        y += lineHeight;
+      }
+      y += 6;
+    } else if (node.tagName === "TABLE") {
       const tableData: any[] = [];
       const headers: string[] = [];
-      
+
       // Extract headers
-      const headerRow = node.querySelector('thead tr');
+      const headerRow = node.querySelector("thead tr");
       if (headerRow) {
-        headerRow.querySelectorAll('th').forEach((th: any) => {
-          headers.push(th.textContent || '');
+        headerRow.querySelectorAll("th").forEach((th: any) => {
+          headers.push(th.textContent || "");
         });
       }
 
       // Extract rows
-      node.querySelectorAll('tbody tr').forEach((tr: any) => {
+      node.querySelectorAll("tbody tr").forEach((tr: any) => {
         const row: string[] = [];
-        tr.querySelectorAll('td').forEach((td: any) => {
-          row.push(td.textContent || '');
+        tr.querySelectorAll("td").forEach((td: any) => {
+          row.push(td.textContent || "");
         });
         if (row.length) tableData.push(row);
       });
@@ -154,17 +335,28 @@ export const exportToPDF = (html: string, logoBase64: string, filename = 'Datame
           startY: y,
           head: headers.length ? [headers] : undefined,
           body: tableData,
-          theme: 'grid',
-          styles: { fontSize: 9, cellPadding: 4 },
-          headStyles: { fillColor: [243, 244, 246], textColor: [0, 0, 0], fontStyle: 'bold' },
+          theme: "grid",
+          styles: { fontSize: 9, cellPadding: 6 },
+          headStyles: {
+            fillColor: [243, 244, 246],
+            textColor: [0, 0, 0],
+            fontStyle: "bold",
+          },
         });
+        // autoTable may add pages; update current y based on lastAutoTable
+        const pages = doc.getNumberOfPages();
         y = (doc as any).lastAutoTable.finalY + 15;
+        if (y > pageHeight - footerSafeMargin) {
+          addPDFFooter(doc, pages);
+          doc.addPage();
+          y = margin;
+        }
       }
     }
-  });
+  }
 
   // Footer on last page
-  addPDFFooter(doc, pageNum);
+  addPDFFooter(doc, doc.getNumberOfPages());
 
   doc.save(filename);
 };
@@ -175,7 +367,7 @@ function addPDFFooter(doc: jsPDF, pageNum: number) {
   const margin = 40;
 
   doc.setFontSize(8);
-  doc.setFont('helvetica', 'normal');
+  doc.setFont("helvetica", "normal");
   doc.setTextColor(67, 67, 67);
 
   // Horizontal line
@@ -183,16 +375,24 @@ function addPDFFooter(doc: jsPDF, pageNum: number) {
   doc.line(margin, pageHeight - 60, pageWidth - margin, pageHeight - 60);
 
   // Footer text line 1
-  const line1 = doc.splitTextToSize(DATAMELLON_FOOTER.line1, pageWidth - margin * 2);
+  const line1 = doc.splitTextToSize(
+    DATAMELLON_FOOTER.line1,
+    pageWidth - margin * 2,
+  );
   doc.text(line1, margin, pageHeight - 50);
 
   // Footer text line 2
-  const line2 = doc.splitTextToSize(DATAMELLON_FOOTER.line2, pageWidth - margin * 2);
+  const line2 = doc.splitTextToSize(
+    DATAMELLON_FOOTER.line2,
+    pageWidth - margin * 2,
+  );
   doc.text(line2, margin, pageHeight - 35);
 
   // Page number (right aligned)
   doc.setFontSize(9);
-  doc.text(`Page | ${pageNum}`, pageWidth - margin, pageHeight - 20, { align: 'right' });
+  doc.text(`Page | ${pageNum}`, pageWidth - margin, pageHeight - 20, {
+    align: "right",
+  });
 }
 
 /* ===============================
@@ -202,17 +402,20 @@ function addPDFFooter(doc: jsPDF, pageNum: number) {
 export const exportToWord = async (
   html: string,
   logoBase64: string,
-  filename = `Datamellon_SOW_${new Date().toLocaleDateString()}.docx`
+  filename = `Datamellon_SOW_${new Date().toLocaleDateString()}.docx`,
 ) => {
   const parser = new DOMParser();
-  const dom = parser.parseFromString(html, 'text/html');
+  const dom = parser.parseFromString(html, "text/html");
 
   // === EXTRACT CLIENT NAME AND DATE ===
-  let clientName = 'Client Name';
-  let projectMonth = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  let clientName = "Client Name";
+  let projectMonth = new Date().toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
 
   // Try to extract from HTML
-  const firstH1 = dom.querySelector('h1');
+  const firstH1 = dom.querySelector("h1");
   if (firstH1 && firstH1.textContent) {
     const match = firstH1.textContent.match(/Datamellon\s*-\s*(.+)/);
     if (match) clientName = match[1].trim();
@@ -222,11 +425,13 @@ export const exportToWord = async (
   let logoBytes: Uint8Array | undefined;
   if (logoBase64) {
     try {
-      const base64Data = logoBase64.includes(',') ? logoBase64.split(',')[1] : logoBase64;
-      const cleanBase64 = base64Data.replace(/\s/g, '');
+      const base64Data = logoBase64.includes(",")
+        ? logoBase64.split(",")[1]
+        : logoBase64;
+      const cleanBase64 = base64Data.replace(/\s/g, "");
       logoBytes = Uint8Array.from(atob(cleanBase64), (c) => c.charCodeAt(0));
     } catch (error) {
-      console.warn('Logo error:', error);
+      console.warn("Logo error:", error);
     }
   }
 
@@ -242,7 +447,7 @@ export const exportToWord = async (
           new ImageRun({
             data: logoBytes,
             transformation: { width: 136, height: 22 },
-            type: 'png',
+            type: "png",
             floating: {
               horizontalPosition: { offset: 1 },
               verticalPosition: { offset: 285750 }, // Position from template
@@ -255,13 +460,13 @@ export const exportToWord = async (
             },
           }),
         ],
-      })
+      }),
     );
   }
 
   // Vertical spacing (empty paragraphs)
   for (let i = 0; i < 10; i++) {
-    coverPage.push(new Paragraph({ text: '', spacing: { after: 240 } }));
+    coverPage.push(new Paragraph({ text: "", spacing: { after: 240 } }));
   }
 
   // Title: "Datamellon - [Client Name]" - Font size 27pt (54 half-points)
@@ -272,18 +477,18 @@ export const exportToWord = async (
       spacing: { after: 0 },
       run: {
         size: 54, // 27pt
-        font: 'Calibri',
+        font: "Calibri",
       },
-    })
+    }),
   );
 
   // Empty line
   coverPage.push(
     new Paragraph({
-      text: '',
+      text: "",
       alignment: AlignmentType.CENTER,
       spacing: { after: 0 },
-    })
+    }),
   );
 
   // Date: "[Month Year]" - Font size 27pt
@@ -294,9 +499,9 @@ export const exportToWord = async (
       spacing: { after: 240 },
       run: {
         size: 54, // 27pt
-        font: 'Calibri',
+        font: "Calibri",
       },
-    })
+    }),
   );
 
   // Page break
@@ -305,12 +510,17 @@ export const exportToWord = async (
   // === SECTION 2: TABLE OF CONTENTS ===
   const tocSection: Paragraph[] = [
     new Paragraph({
-      text: 'Table of Contents',
+      text: "Table of Contents",
       heading: HeadingLevel.HEADING_3,
       spacing: { after: 200 },
     }),
     new Paragraph({
-      children: [new TableOfContents('Table of Contents', { hyperlink: true, headingStyleRange: '1-3' })],
+      children: [
+        new TableOfContents("Table of Contents", {
+          hyperlink: true,
+          headingStyleRange: "1-3",
+        }),
+      ],
     }),
     new Paragraph({ children: [new PageBreak()] }),
   ];
@@ -319,119 +529,122 @@ export const exportToWord = async (
   const content: any[] = [];
 
   dom.body.childNodes.forEach((node: any) => {
-    if (node.tagName === 'H1') {
+    if (node.tagName === "H1") {
       content.push(
         new Paragraph({
-          text: node.textContent || '',
+          text: node.textContent || "",
           heading: HeadingLevel.HEADING_1,
           spacing: { before: 240, after: 240 },
-        })
+        }),
       );
-    } else if (node.tagName === 'H2') {
+    } else if (node.tagName === "H2") {
       content.push(
         new Paragraph({
-          text: node.textContent || '',
+          text: node.textContent || "",
           heading: HeadingLevel.HEADING_2,
           spacing: { before: 180, after: 180 },
-        })
+        }),
       );
-    } else if (node.tagName === 'H3') {
+    } else if (node.tagName === "H3") {
       content.push(
         new Paragraph({
-          text: node.textContent || '',
+          text: node.textContent || "",
           heading: HeadingLevel.HEADING_3,
           spacing: { before: 140, after: 140 },
-        })
+        }),
       );
-    } else if (node.tagName === 'P') {
+    } else if (node.tagName === "P") {
       // Handle highlighted text (mark tags)
       const children: any[] = [];
       node.childNodes.forEach((child: any) => {
-        if (child.tagName === 'MARK') {
+        if (child.tagName === "MARK") {
           children.push(
             new TextRun({
-              text: child.textContent || '',
-              highlight: 'yellow',
-            })
+              text: child.textContent || "",
+              highlight: "yellow",
+            }),
           );
-        } else if (child.tagName === 'STRONG' || child.tagName === 'B') {
+        } else if (child.tagName === "STRONG" || child.tagName === "B") {
           children.push(
             new TextRun({
-              text: child.textContent || '',
+              text: child.textContent || "",
               bold: true,
-            })
+            }),
           );
         } else {
-          children.push(new TextRun(child.textContent || ''));
+          children.push(new TextRun(child.textContent || ""));
         }
       });
 
       content.push(
         new Paragraph({
-          children: children.length ? children : [new TextRun(node.textContent || '')],
+          children: children.length
+            ? children
+            : [new TextRun(node.textContent || "")],
           spacing: { after: 120 },
-        })
+        }),
       );
-    } else if (node.tagName === 'UL') {
-      node.querySelectorAll('li').forEach((li: any) => {
+    } else if (node.tagName === "UL") {
+      node.querySelectorAll("li").forEach((li: any) => {
         content.push(
           new Paragraph({
-            text: li.textContent || '',
+            text: li.textContent || "",
             bullet: { level: 0 },
             spacing: { after: 60 },
-          })
+          }),
         );
       });
-    } else if (node.tagName === 'OL') {
-      node.querySelectorAll('li').forEach((li: any, index: number) => {
+    } else if (node.tagName === "OL") {
+      node.querySelectorAll("li").forEach((li: any, index: number) => {
         content.push(
           new Paragraph({
-            text: li.textContent || '',
-            numbering: { reference: 'default-numbering', level: 0 },
+            text: li.textContent || "",
+            numbering: { reference: "default-numbering", level: 0 },
             spacing: { after: 60 },
-          })
+          }),
         );
       });
-    } else if (node.tagName === 'TABLE') {
+    } else if (node.tagName === "TABLE") {
       const rows: TableRow[] = [];
 
       // Header row
-      const headerRow = node.querySelector('thead tr');
+      const headerRow = node.querySelector("thead tr");
       if (headerRow) {
         const headerCells: TableCell[] = [];
-        headerRow.querySelectorAll('th').forEach((th: any) => {
+        headerRow.querySelectorAll("th").forEach((th: any) => {
           headerCells.push(
             new TableCell({
-              children: [new Paragraph({ text: th.textContent || '' })],
-              shading: { fill: 'F3F4F6', type: ShadingType.CLEAR },
+              children: [new Paragraph({ text: th.textContent || "" })],
+              shading: { fill: "F3F4F6", type: ShadingType.CLEAR },
               borders: {
-                top: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
-                bottom: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
-                left: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
-                right: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
+                top: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
+                bottom: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
+                left: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
+                right: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
               },
               margins: { top: 80, bottom: 80, left: 120, right: 120 },
-            })
+            }),
           );
         });
-        if (headerCells.length) rows.push(new TableRow({ children: headerCells }));
+        if (headerCells.length)
+          rows.push(new TableRow({ children: headerCells }));
       }
 
       // Body rows
-      node.querySelectorAll('tbody tr').forEach((tr: any) => {
+      node.querySelectorAll("tbody tr").forEach((tr: any) => {
         const cells: TableCell[] = [];
-        tr.querySelectorAll('td').forEach((td: any) => {
+        tr.querySelectorAll("td").forEach((td: any) => {
           cells.push(
             new TableCell({
-              children: [new Paragraph({ text: td.textContent || '' })],
+              children: [new Paragraph({ text: td.textContent || "" })],
               borders: {
-                top: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
-                bottom: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
-                left: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
-                right: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
+                top: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
+                bottom: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
+                left: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
+                right: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
               },
               margins: { top: 80, bottom: 80, left: 120, right: 120 },
-            })
+            }),
           );
         });
         if (cells.length) rows.push(new TableRow({ children: cells }));
@@ -442,9 +655,9 @@ export const exportToWord = async (
           new Table({
             width: { size: 100, type: WidthType.PERCENTAGE },
             rows,
-          })
+          }),
         );
-        content.push(new Paragraph({ text: '', spacing: { after: 200 } }));
+        content.push(new Paragraph({ text: "", spacing: { after: 200 } }));
       }
     }
   });
@@ -453,13 +666,13 @@ export const exportToWord = async (
   const footer = new Footer({
     children: [
       // Empty paragraph
-      new Paragraph({ text: '', spacing: { after: 0, line: 240 } }),
-      
+      new Paragraph({ text: "", spacing: { after: 0, line: 240 } }),
+
       // Horizontal line (represented by empty paragraph with shading)
       new Paragraph({
-        text: '',
+        text: "",
         border: {
-          top: { style: BorderStyle.SINGLE, size: 2, color: 'A0A0A0' },
+          top: { style: BorderStyle.SINGLE, size: 2, color: "A0A0A0" },
         },
         spacing: { after: 0 },
       }),
@@ -467,28 +680,45 @@ export const exportToWord = async (
       // Line 1
       new Paragraph({
         children: [
-          new TextRun({ text: 'DATAMELLON LIMITED', bold: true, size: 16, color: '434343' }),
-          new TextRun({ text: ' | ', size: 16, color: '434343' }),
-          new TextRun({ text: 'T: ', bold: true, size: 16, color: '434343' }),
           new TextRun({
-            text: '+442039954988, +23416331141, +23416331142,  +2348147728469 |',
+            text: "DATAMELLON LIMITED",
+            bold: true,
             size: 16,
-            color: '434343',
+            color: "434343",
           }),
-          new TextRun({ text: ' W:', bold: true, size: 16, color: '434343' }),
-          new TextRun({ text: ' ', size: 16, color: '434343' }),
-          new ExternalHyperlink({
-            children: [new TextRun({ text: 'https://datamellon.com', size: 16, color: '434343', underline: {} })],
-            link: 'https://datamellon.com',
+          new TextRun({ text: " | ", size: 16, color: "434343" }),
+          new TextRun({ text: "T: ", bold: true, size: 16, color: "434343" }),
+          new TextRun({
+            text: "+442039954988, +23416331141, +23416331142,  +2348147728469 |",
+            size: 16,
+            color: "434343",
           }),
-          new TextRun({ text: ' | ', size: 16, color: '434343' }),
-          new TextRun({ text: 'E', bold: true, size: 16, color: '434343' }),
-          new TextRun({ text: ': ', size: 16, color: '434343' }),
+          new TextRun({ text: " W:", bold: true, size: 16, color: "434343" }),
+          new TextRun({ text: " ", size: 16, color: "434343" }),
           new ExternalHyperlink({
             children: [
-              new TextRun({ text: 'connect@datamellon.com', size: 16, color: '434343', underline: {} }),
+              new TextRun({
+                text: "https://datamellon.com",
+                size: 16,
+                color: "434343",
+                underline: {},
+              }),
             ],
-            link: 'mailto:connect@datamellon.com',
+            link: "https://datamellon.com",
+          }),
+          new TextRun({ text: " | ", size: 16, color: "434343" }),
+          new TextRun({ text: "E", bold: true, size: 16, color: "434343" }),
+          new TextRun({ text: ": ", size: 16, color: "434343" }),
+          new ExternalHyperlink({
+            children: [
+              new TextRun({
+                text: "connect@datamellon.com",
+                size: 16,
+                color: "434343",
+                underline: {},
+              }),
+            ],
+            link: "mailto:connect@datamellon.com",
           }),
         ],
         spacing: { after: 0 },
@@ -497,31 +727,45 @@ export const exportToWord = async (
       // Line 2
       new Paragraph({
         children: [
-          new TextRun({ text: 'London Office:', bold: true, size: 16, color: '434343' }),
           new TextRun({
-            text: ' Epworth House, 25 City Rd, Shoreditch, London EC1Y 1AA, United Kingdom | ',
+            text: "London Office:",
+            bold: true,
             size: 16,
-            color: '434343',
+            color: "434343",
           }),
-          new TextRun({ text: 'Lagos Office:', bold: true, size: 16, color: '434343' }),
           new TextRun({
-            text: ' NIJ House, Plot 20, Adeyemo Alakija Street, Victoria Island, Lagos, Nigeria',
+            text: " Epworth House, 25 City Rd, Shoreditch, London EC1Y 1AA, United Kingdom | ",
             size: 16,
-            color: '434343',
+            color: "434343",
+          }),
+          new TextRun({
+            text: "Lagos Office:",
+            bold: true,
+            size: 16,
+            color: "434343",
+          }),
+          new TextRun({
+            text: " NIJ House, Plot 20, Adeyemo Alakija Street, Victoria Island, Lagos, Nigeria",
+            size: 16,
+            color: "434343",
           }),
         ],
         spacing: { after: 0 },
       }),
 
       // Empty line
-      new Paragraph({ text: '', spacing: { after: 0 } }),
+      new Paragraph({ text: "", spacing: { after: 0 } }),
 
       // Page number (right-aligned)
       new Paragraph({
         alignment: AlignmentType.RIGHT,
         children: [
-          new TextRun({ text: 'Page | ', size: 18, color: '434343' }),
-          new TextRun({ children: [PageNumber.CURRENT], size: 18, color: '434343' }),
+          new TextRun({ text: "Page | ", size: 18, color: "434343" }),
+          new TextRun({
+            children: [PageNumber.CURRENT],
+            size: 18,
+            color: "434343",
+          }),
         ],
       }),
     ],
@@ -533,37 +777,37 @@ export const exportToWord = async (
       default: {
         document: {
           run: {
-            font: 'Calibri',
+            font: "Calibri",
             size: 22, // 11pt
           },
         },
       },
       paragraphStyles: [
         {
-          id: 'Heading1',
-          name: 'Heading 1',
-          basedOn: 'Normal',
-          next: 'Normal',
+          id: "Heading1",
+          name: "Heading 1",
+          basedOn: "Normal",
+          next: "Normal",
           quickFormat: true,
-          run: { size: 36, bold: true, font: 'Calibri', color: '000000' },
+          run: { size: 36, bold: true, font: "Calibri", color: "000000" },
           paragraph: { spacing: { before: 240, after: 240 }, outlineLevel: 0 },
         },
         {
-          id: 'Heading2',
-          name: 'Heading 2',
-          basedOn: 'Normal',
-          next: 'Normal',
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "Normal",
           quickFormat: true,
-          run: { size: 28, bold: true, font: 'Calibri', color: '000000' },
+          run: { size: 28, bold: true, font: "Calibri", color: "000000" },
           paragraph: { spacing: { before: 180, after: 180 }, outlineLevel: 1 },
         },
         {
-          id: 'Heading3',
-          name: 'Heading 3',
-          basedOn: 'Normal',
-          next: 'Normal',
+          id: "Heading3",
+          name: "Heading 3",
+          basedOn: "Normal",
+          next: "Normal",
           quickFormat: true,
-          run: { size: 24, bold: true, font: 'Calibri', color: '000000' },
+          run: { size: 24, bold: true, font: "Calibri", color: "000000" },
           paragraph: { spacing: { before: 140, after: 140 }, outlineLevel: 2 },
         },
       ],
@@ -571,12 +815,12 @@ export const exportToWord = async (
     numbering: {
       config: [
         {
-          reference: 'default-numbering',
+          reference: "default-numbering",
           levels: [
             {
               level: 0,
               format: LevelFormat.DECIMAL,
-              text: '%1.',
+              text: "%1.",
               alignment: AlignmentType.LEFT,
               style: {
                 paragraph: {
@@ -602,7 +846,37 @@ export const exportToWord = async (
         footers: {
           default: footer,
         },
-        children: [...coverPage, ...tocSection, ...content],
+        children: [...coverPage],
+      },
+      {
+        properties: {
+          page: {
+            size: {
+              width: PAGE.width,
+              height: PAGE.height,
+            },
+            margin: PAGE.margin,
+          },
+        },
+        footers: {
+          default: footer,
+        },
+        children: [...tocSection],
+      },
+      {
+        properties: {
+          page: {
+            size: {
+              width: PAGE.width,
+              height: PAGE.height,
+            },
+            margin: PAGE.margin,
+          },
+        },
+        footers: {
+          default: footer,
+        },
+        children: [...content],
       },
     ],
   });

@@ -1,172 +1,236 @@
 "use client";
 
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useState, useEffect, useRef } from "react";
+import { renderAsync } from "docx-preview";
+import { marked } from "marked";
 import Sidebar from "@/components/Sidebar";
-import DocumentEditor from "@/components/DocumentEditor";
 import AIAssistant from "@/components/AIAssistant";
+import DocxPreview from "@/components/DocxPreview";
 import { useSOWStore } from "@/store/sowStore";
-import { Message, UploadedFile } from "@/types";
+import { Message } from "@/types";
 import { exportToPDF, exportToWord } from "@/lib/exportUtils";
+import { exportToWordFromTemplate } from "@/lib/templateExport";
+import {
+  startJob,
+  pollUntilComplete,
+  downloadDocx,
+  getDownloadUrl,
+  type StatusResponse,
+  type GenerateSowRequest,
+  type StartJobResponse,
+} from "@/lib/sowApi";
 import Loader from "@/components/Loader";
+import { useToast, useModal } from "@/components/UiProvider";
+import { extractLogoDataUrlFromTemplate } from "@/lib/templateExport";
+import { generateCoverHtml } from "@/lib/coverPage";
+
+const resolveDocxUrl = (
+  status: StatusResponse,
+  jobId: string,
+): string | null => {
+  if (status.s3_url) {
+    if (status.s3_url.startsWith("s3://")) {
+      return getDownloadUrl(jobId);
+    }
+    return status.s3_url;
+  }
+  if (status.docx_path) {
+    if (status.docx_path.startsWith("http")) return status.docx_path;
+    const baseUrl =
+      process.env.NEXT_PUBLIC_BASE_URL || "https://sow-gen.onrender.com";
+    const normalizedPath = status.docx_path.startsWith("/")
+      ? status.docx_path
+      : `/${status.docx_path}`;
+    return `${baseUrl}${normalizedPath}`;
+  }
+  return getDownloadUrl(jobId);
+};
+
+const renderDocxUrlToHtml = async (
+  docxUrl: string,
+): Promise<{ html: string; buffer: ArrayBuffer }> => {
+  const response = await fetch(docxUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch DOCX: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const container = document.createElement("div");
+
+  await renderAsync(arrayBuffer, container, undefined, {
+    inWrapper: false,
+    ignoreWidth: true,
+    ignoreHeight: true,
+  });
+
+  return { html: container.innerHTML || "", buffer: arrayBuffer };
+};
 
 export default function Home() {
   const {
     currentDocument,
-    uploadedFiles,
     recentFiles,
     messages,
     selectedFile,
     updateDocument,
-    addUploadedFile,
-    removeUploadedFile,
     addMessage,
+    clearMessages,
+    setMessages,
     selectFile,
     saveCurrentDocument,
+    clientLogoDataUrl,
+    isHydrated,
   } = useSOWStore();
 
+  const { showToast } = useToast();
+  const { prompt } = useModal();
+
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
+  const [lastJobId, setLastJobId] = useState<string | null>(null);
+  const originalDocxBufferRef = useRef<ArrayBuffer | null>(null);
+  const [previewDocxBuffer, setPreviewDocxBuffer] =
+    useState<ArrayBuffer | null>(null);
 
-  console.log("Messages:", messages);
+  // Load persisted state from localStorage on mount
+  useEffect(() => {
+    useSOWStore.persist.rehydrate();
+  }, []);
 
-  // Handle file upload with base64 encoding
-  const handleFileUpload = useCallback(
-    (files: FileList) => {
-      Array.from(files).forEach((file) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const base64Content = e.target?.result as string;
+  // Generate SOW with API (async flow: start job → poll → complete)
+  const handleGenerateFromPayload = useCallback(
+    async (payload: GenerateSowRequest) => {
+      setIsGenerating(true);
+      setGenerationStatus("Starting...");
+      setLastJobId(null);
+      setPreviewDocxBuffer(null);
 
-          const uploadedFile: UploadedFile = {
-            id: Date.now().toString() + Math.random(),
-            name: file.name,
-            size: file.size,
-            type: file.type,
-            content: base64Content,
-          };
-
-          console.log("Uploaded file (base64):", uploadedFile);
-          addUploadedFile(uploadedFile);
-
-          const message: Message = {
-            id: Date.now().toString(),
-            role: "assistant",
-            content: `File "${file.name}" uploaded successfully! I can now use this as context for generating your SOW.`,
-          };
-          addMessage(message);
-        };
-
-        reader.onerror = (error) => {
-          console.error("File reading error:", error);
-          alert(`Failed to read file: ${file.name}`);
-        };
-
-        reader.readAsDataURL(file);
-      });
-    },
-    [addUploadedFile, addMessage]
-  );
-
-  // Handle sending messages
-  const handleSendMessage = useCallback(
-    (content: string) => {
-      const userMessage: Message = {
+      const loadingMessage: Message = {
         id: Date.now().toString(),
-        role: "user",
-        content,
-      };
-      addMessage(userMessage);
-
-      setTimeout(() => {
-        const aiMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: `Got it! ${
-            uploadedFiles.length > 0
-              ? `I see you've uploaded ${uploadedFiles.length} file(s) for context.`
-              : ""
-          } Click "Generate SOW" when you're ready, and I'll create a professional Statement of Work based on your requirements.`,
-        };
-        addMessage(aiMessage);
-      }, 500);
-    },
-    [addMessage, uploadedFiles.length]
-  );
-
-  // Handle SOW generation with API
-  const handleGenerate = useCallback(async () => {
-    setIsGenerating(true);
-
-    const userMessages = messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content)
-      .join("\n");
-
-    const prompt =
-      userMessages ||
-      "Generate a comprehensive Statement of Work with standard sections including project overview, scope, deliverables, timeline, and responsibilities.";
-
-    const body = `body`;
-
-    const loadingMessage: Message = {
-      id: Date.now().toString(),
-      role: "assistant",
-      content: "Generating your Statement of Work... This may take a moment.",
-    };
-    addMessage(loadingMessage);
-
-    try {
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
-
-      const form = new FormData();
-      form.append("prompt", prompt);
-      form.append("body", body);
-      form.append("include_pricing", "true");
-      form.append("include_diagram", "false");
-
-      // Convert base64 back to Blob and append to FormData
-      for (const file of uploadedFiles) {
-        const response = await fetch(file.content);
-        const blob = await response.blob();
-        form.append("context_files", blob, file.name);
-      }
-
-      const response = await fetch(`${baseUrl}/generate`, {
-        method: "POST",
-        body: form,
-      });
-
-      if (!response.ok) {
-        throw new Error(`API request failed with status ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log("Res", data);
-
-      const generatedContent =
-        data.html || data.markdown || "<p>No content generated.</p>";
-
-      updateDocument(generatedContent);
-
-      const successMessage: Message = {
-        id: (Date.now() + 1).toString(),
         role: "assistant",
         content:
-          "I've generated a comprehensive Statement of Work based on your requirements. You can now edit it in the main editor, format it as needed, and export it when ready!",
+          "Generating your Statement of Work... This may take 2–15 minutes. Please wait.",
       };
-      addMessage(successMessage);
-    } catch (error) {
-      console.error("Generation error:", error);
+      addMessage(loadingMessage);
 
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: `Sorry, there was an error generating your SOW: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }. Please try again.`,
-      };
-      addMessage(errorMessage);
+      try {
+        // 1. Start job (backend may return async job_id or immediate download_url)
+        const startResult: StartJobResponse = await startJob({
+          sponsor_name: "TBD",
+          sponsor_title: "TBD",
+          sponsor_email: "TBD",
+          ...payload,
+        });
+        if ("download_url" in startResult) {
+          const fullDownloadUrl = getDownloadUrl(startResult.download_url);
+          setGenerationStatus("Rendering document...");
 
-      const fallbackContent = `
+          const { html: docxHtml, buffer: docxBuffer } =
+            await renderDocxUrlToHtml(fullDownloadUrl);
+          if (!docxHtml) {
+            throw new Error("DOCX render returned empty content");
+          }
+
+          originalDocxBufferRef.current = docxBuffer;
+          setPreviewDocxBuffer(docxBuffer);
+          setLastJobId(startResult.download_url);
+
+          addMessage({
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content:
+              "Your DOCX is ready. Preview it in the center panel, export to PDF, or download the DOCX.",
+          });
+          return;
+        }
+
+        const { job_id } = startResult;
+        setGenerationStatus("Queued");
+
+        // 2. Poll until completed
+        const result = await pollUntilComplete(
+          job_id,
+          (status: StatusResponse) => {
+            setGenerationStatus(
+              status.status === "queued"
+                ? "Queued"
+                : status.status === "running"
+                  ? "Running..."
+                  : status.status,
+            );
+          },
+          { intervalMs: 7000, timeoutMs: 20 * 60 * 1000 },
+        );
+
+        // 3. Completed - render DOCX (including template) into editable HTML
+        const docxUrl = resolveDocxUrl(result, job_id);
+        if (docxUrl) {
+          try {
+            setGenerationStatus("Rendering document...");
+            const { html: docxHtml, buffer: docxBuffer } =
+              await renderDocxUrlToHtml(docxUrl);
+            if (docxHtml) {
+              originalDocxBufferRef.current = docxBuffer;
+              setPreviewDocxBuffer(docxBuffer);
+              setLastJobId(job_id);
+
+              const successMessage: Message = {
+                id: (Date.now() + 1).toString(),
+                role: "assistant",
+                content:
+                  "Your DOCX (with template styling) is ready. Preview it in the center panel, export to PDF, or download the DOCX.",
+              };
+              addMessage(successMessage);
+              return;
+            }
+          } catch (error) {
+            console.warn("DOCX render failed, falling back to markdown", error);
+          }
+        }
+
+        // Fallback - update document with markdown converted to HTML
+        const htmlContent = result.markdown
+          ? (marked.parse(result.markdown) as string)
+          : "<p>No content generated.</p>";
+
+        // Try to extract logo from template and prepend a cover page
+        let logoDataUrl: string | null = null;
+        try {
+          logoDataUrl = await extractLogoDataUrlFromTemplate(
+            "templates/Datamellon_SOW_Template.docx",
+          );
+        } catch (e) {
+          console.warn("Failed to extract logo for cover page", e);
+        }
+
+        const finalHtml = generateCoverHtml(
+          htmlContent,
+          logoDataUrl || undefined,
+          clientLogoDataUrl || undefined,
+        );
+        updateDocument(finalHtml);
+        setLastJobId(job_id);
+
+        const successMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content:
+            'I\'ve generated a comprehensive Statement of Work. You can edit it in the editor, or click "Download DOCX" to get the server-generated Word document.',
+        };
+        addMessage(successMessage);
+      } catch (error) {
+        console.error("Generation error:", error);
+
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Sorry, there was an error generating your SOW: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }. Please try again.`,
+        };
+        addMessage(errorMessage);
+
+        const fallbackContent = `
     <div style="background-color: #FEF3C7; border-left: 4px solid #F59E0B; padding: 20px; margin-bottom: 24px; border-radius: 8px;">
       <h3 style="color: #92400E; margin-top: 0; font-size: 18px; font-weight: 600;">⚠️ Generation Service Unavailable</h3>
       <p style="color: #78350F; margin-bottom: 12px;">
@@ -228,70 +292,235 @@ export default function Home() {
       </p>
     </div>
   `;
-      updateDocument(fallbackContent);
-    } finally {
-      setIsGenerating(false);
+        // Prepend a cover page to the fallback content as well
+        try {
+          const logo = await extractLogoDataUrlFromTemplate(
+            "templates/Datamellon_SOW_Template.docx",
+          );
+          updateDocument(
+            generateCoverHtml(
+              fallbackContent,
+              logo || undefined,
+              clientLogoDataUrl || undefined,
+            ),
+          );
+        } catch (e) {
+          updateDocument(
+            generateCoverHtml(
+              fallbackContent,
+              undefined,
+              clientLogoDataUrl || undefined,
+            ),
+          );
+        }
+      } finally {
+        setIsGenerating(false);
+        setGenerationStatus(null);
+      }
+    },
+    [addMessage],
+  );
+
+  const handleGenerateSow = useCallback(
+    (payload: GenerateSowRequest) => {
+      const contextPreview =
+        payload.context_text.length > 220
+          ? `${payload.context_text.slice(0, 220)}…`
+          : payload.context_text;
+
+      // Atomically replace the chat with exactly what will be sent.
+      setMessages([
+        {
+          id: Date.now().toString(),
+          role: "user",
+          content:
+            `SOW Details\n` +
+            `Client: ${payload.client_name}\n` +
+            `Project: ${payload.project_title}\n` +
+            `Timeline: ${payload.timeline_weeks} week(s)\n` +
+            `AWS services: ${payload.aws_services}\n` +
+            `Sponsor: ${payload.sponsor_name || "TBD"} (${payload.sponsor_title || "TBD"}) — ${payload.sponsor_email || "TBD"}\n` +
+            `Context: ${contextPreview}`,
+        },
+      ]);
+      setTimeout(() => handleGenerateFromPayload(payload), 0);
+    },
+    [setMessages, handleGenerateFromPayload],
+  );
+
+  // Download the server-generated DOCX
+  const handleDownloadDocx = useCallback(async () => {
+    if (!lastJobId) return;
+    try {
+      const blob = await downloadDocx(lastJobId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Statement_of_Work.docx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast({ message: "Downloaded DOCX successfully", type: "success" });
+    } catch (error) {
+      console.error("Download error:", error);
+      showToast({
+        message:
+          error instanceof Error ? error.message : "Failed to download DOCX",
+        type: "error",
+      });
     }
-  }, [uploadedFiles, messages, updateDocument, addMessage]);
+  }, [lastJobId]);
 
   // Handle save
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!currentDocument) {
-      alert("Please create or generate a document first!");
+      showToast({
+        message: "Please create or generate a document first!",
+        type: "info",
+      });
       return;
     }
 
-    const title = prompt("Enter document title:", "New Statement of Work");
+    const title = await prompt(
+      "Enter document title:",
+      "New Statement of Work",
+    );
     if (title) {
       saveCurrentDocument(title);
-      alert("Document saved successfully!");
+      showToast({ message: "Document saved successfully!", type: "success" });
     }
-  }, [currentDocument, saveCurrentDocument]);
+  }, [currentDocument, saveCurrentDocument, prompt, showToast]);
 
   // Handle export
   const handleExport = useCallback(
-    (format: "pdf" | "word") => {
-      if (!currentDocument) {
-        alert("Please generate or create a document first!");
-        return;
-      }
-
-      const filename = `sow-${Date.now()}`;
+    async (format: "pdf" | "word") => {
+      const filename = `Datamellon_SOW_${new Date().toISOString().slice(0, 10)}`;
 
       try {
         if (format === "pdf") {
-          exportToPDF(currentDocument, `${filename}.pdf`);
-          alert("PDF exported successfully!");
+          // Try to extract logo from template (falls back to no logo)
+          const logo = await extractLogoDataUrlFromTemplate(
+            "/templates/Datamellon_SOW_Template.docx",
+          );
+
+          // Export PDF from the backend-generated DOCX (best formatting match).
+          // Prefer in-memory buffer; otherwise fetch the DOCX from the API download URL.
+          let docxBufferToRender: ArrayBuffer | null =
+            originalDocxBufferRef.current || previewDocxBuffer;
+
+          if (!docxBufferToRender && lastJobId) {
+            const url = getDownloadUrl(lastJobId);
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(
+                `Failed to fetch DOCX for PDF: ${response.status}`,
+              );
+            }
+            docxBufferToRender = await response.arrayBuffer();
+            // Cache it for subsequent exports
+            originalDocxBufferRef.current = docxBufferToRender;
+            setPreviewDocxBuffer(docxBufferToRender);
+          }
+
+          if (docxBufferToRender) {
+            const container = document.createElement("div");
+            await renderAsync(docxBufferToRender, container, undefined, {
+              inWrapper: false,
+              ignoreWidth: true,
+              ignoreHeight: true,
+            });
+            await exportToPDF(
+              container.innerHTML || currentDocument || "<p></p>",
+              logo ?? "",
+              `${filename}.pdf`,
+            );
+          } else {
+            showToast({
+              message: "Please generate a document first to export as PDF.",
+              type: "info",
+            });
+            return;
+          }
+
+          showToast({ message: "PDF exported successfully!", type: "success" });
         } else {
-          exportToWord(currentDocument, `${filename}.docx`);
-          alert("Word document exported successfully!");
+          // Prefer the backend-generated DOCX when available (best formatting)
+          if (lastJobId) {
+            await handleDownloadDocx();
+            showToast({
+              message: "Downloaded DOCX from API (best formatting).",
+              type: "success",
+            });
+            return;
+          }
+
+          if (!currentDocument) {
+            showToast({
+              message: "Please generate a document first to export as Word.",
+              type: "info",
+            });
+            return;
+          }
+
+          // Use Datamellon template for Word export
+          await exportToWordFromTemplate(
+            currentDocument,
+            "/templates/Datamellon_SOW_Template.docx",
+            `${filename}.docx`,
+            originalDocxBufferRef.current ?? undefined,
+          );
+          showToast({
+            message: "Word document exported successfully!",
+            type: "success",
+          });
         }
       } catch (error) {
         console.error("Export error:", error);
-        alert(`Failed to export as ${format.toUpperCase()}. Please try again.`);
+        showToast({
+          message: `Failed to export as ${format.toUpperCase()}. Please try again.`,
+          type: "error",
+        });
       }
     },
-    [currentDocument]
+    [
+      currentDocument,
+      showToast,
+      lastJobId,
+      handleDownloadDocx,
+      previewDocxBuffer,
+    ],
   );
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      {isGenerating && <Loader />}
-      <Sidebar recentFiles={recentFiles} onFileSelect={selectFile} />
-      <DocumentEditor
-        content={currentDocument}
-        onChange={updateDocument}
-        onSave={handleSave}
-        onExport={handleExport}
-      />
-      <AIAssistant
-        messages={messages}
-        onSendMessage={handleSendMessage}
-        onGenerate={handleGenerate}
-        uploadedFiles={uploadedFiles}
-        onUpload={handleFileUpload}
-        onRemoveFile={removeUploadedFile}
-      />
-    </div>
+    <>
+      {!isHydrated ? (
+        <div className="w-full h-screen flex items-center justify-center bg-white">
+          <div className="text-center">
+            <div className="inline-flex items-center justify-center w-12 h-12 bg-green-100 rounded-full mb-4">
+              <div className="w-6 h-6 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+            <p className="text-gray-600 font-medium">Loading...</p>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-5 h-screen overflow-hidden">
+          {isGenerating && <Loader status={generationStatus} />}
+          <Sidebar recentFiles={recentFiles} onFileSelect={selectFile} />
+          <DocxPreview
+            docxBuffer={previewDocxBuffer}
+            isGenerating={isGenerating}
+            onDownloadDocx={lastJobId ? handleDownloadDocx : undefined}
+            onDownloadWord={lastJobId ? handleDownloadDocx : undefined}
+            onExportPdf={() => handleExport("pdf")}
+          />
+          <AIAssistant
+            messages={messages}
+            onGenerateSow={handleGenerateSow}
+            isGenerating={isGenerating}
+          />
+        </div>
+      )}
+    </>
   );
 }
