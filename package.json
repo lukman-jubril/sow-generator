@@ -27,7 +27,11 @@
     "remark-gfm": "^4.0.1",
     "zustand": "^5.0.8"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.15.9",
     "@tailwindcss/postcss": "^4",
     "@types/file-saver": "^2.0.7",
     "@types/html-docx-js": "^0.3.4",
